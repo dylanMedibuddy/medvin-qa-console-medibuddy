@@ -50,12 +50,12 @@ The `hd` param is a hint to Google, not a guarantee — the server-side domain c
 ## Build order status (CONTEXT.md §14)
 
 - [x] 1. Scaffold Next.js + Tailwind + Supabase client
-- [ ] 2. Supabase project setup + schema SQL + Google provider — **Dylan to do before step 3 works**
+- [x] 2. Supabase project setup + schema SQL + Google provider
 - [x] 3. Auth flow + proxy + domain restriction
 - [x] 4. /queue basic table
-- [ ] 5. /review/[id] side-by-side + approve/reject
-- [ ] 6. /api/make/* endpoints with API key auth
-- [ ] 7. Seed test items
+- [x] 5. /review/[id] side-by-side + approve/reject
+- [x] 6. /api/make/* endpoints with API key auth — **requires `supabase/migrations/001_add_dry_run_status.sql` applied**
+- [x] 7. Seed test items (via SQL insert, see commit history)
 - [ ] 8. Diff highlighting, keyboard shortcuts, edit-in-place
 - [ ] 9. /runs and /audit pages
 - [ ] 10. /admin/users
@@ -66,3 +66,5 @@ The `hd` param is a hint to Google, not a guarantee — the server-side domain c
 - Admin bootstrap: the `handle_new_user` trigger in CONTEXT.md §4 doesn't currently set admin from `ADMIN_BOOTSTRAP_EMAIL`. When wiring Supabase, extend the trigger (or a separate one) to check the new user's email and set `role = 'admin'` when it matches.
 - The `/review/[id]` Hard Rules (CONTEXT.md §7): preserve option ids, exactly one `is_correct` for single-choice. Validate client- AND server-side before approval.
 - Make-facing endpoints use the service role client (`createServiceRoleClient` in `lib/supabase/server.ts`) to bypass RLS. Never call that from the browser.
+- Schema evolution lives in `supabase/migrations/NNN_*.sql` — apply in order via Supabase SQL Editor. `001` adds `dry_run_would_patch` to the `review_items.status` check constraint.
+- Audit log: `/api/make/*` endpoints write `actor_type = 'system'` rows. User-initiated approve/reject actions don't yet write audit_log — will need to when `/audit` page is built (either an RLS insert policy for authenticated or switch those server actions to the service role).

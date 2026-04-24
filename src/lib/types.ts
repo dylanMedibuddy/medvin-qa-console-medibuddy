@@ -5,6 +5,7 @@ export type ReviewStatus =
   | 'patching'
   | 'patched'
   | 'patch_error'
+  | 'dry_run_would_patch'
 
 export type QuestionType =
   | 'single-choice'
