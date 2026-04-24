@@ -59,7 +59,11 @@ The `hd` param is a hint to Google, not a guarantee — the server-side domain c
 - [ ] 8. Diff highlighting, keyboard shortcuts, edit-in-place
 - [ ] 9. /runs and /audit pages
 - [ ] 10. /admin/users
-- [ ] 11. Deploy to Railway
+- [x] 11. Deploy to Railway — live at https://medvin-qa-console-medibuddy-production.up.railway.app
+
+## Outstanding
+- `GET /api/make/review-items?status=approved&not_patched=true` (CONTEXT.md §5) — not yet built. Scenario B needs this to poll for work.
+- User-initiated approve/reject actions don't write to audit_log (see "Notes for future sessions" above).
 
 ## Notes for future sessions
 
