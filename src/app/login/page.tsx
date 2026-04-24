@@ -16,6 +16,7 @@ export default function LoginPage() {
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
         queryParams: {
+          apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
           hd: 'medibuddy.co.uk',
           prompt: 'select_account',
         },
