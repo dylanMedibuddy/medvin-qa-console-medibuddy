@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServiceRoleClient } from '@/lib/supabase/server'
 import { badRequest, isObject, withMakeAuth } from '@/lib/api/make-auth'
+import { coerceJsonPayload, validateRewrite } from '@/lib/api/review-validation'
 
 export const POST = withMakeAuth(async (request: NextRequest) => {
   const body = (await request.json().catch(() => null)) as unknown
@@ -19,8 +20,12 @@ export const POST = withMakeAuth(async (request: NextRequest) => {
   const requireArray = (k: string) => {
     if (!Array.isArray(body[k])) fields.push(k)
   }
-  const requireObject = (k: string) => {
-    if (!isObject(body[k])) fields.push(k)
+  // For the two payload fields Make may send as JSON strings — coerced below.
+  // Here we just check the field is present and is either a string or an object.
+  const requireStringOrObject = (k: string) => {
+    const v = body[k]
+    const ok = typeof v === 'string' || (typeof v === 'object' && v !== null && !Array.isArray(v))
+    if (!ok) fields.push(k)
   }
 
   requireString('run_id')
@@ -33,15 +38,48 @@ export const POST = withMakeAuth(async (request: NextRequest) => {
   nullableNumber('length_ratio')
   requireString('original_question_text')
   requireArray('original_options')
-  requireObject('original_payload')
+  requireStringOrObject('original_payload')
   requireString('proposed_question_text')
   requireArray('proposed_options')
-  requireObject('proposed_patch_payload')
+  requireStringOrObject('proposed_patch_payload')
   requireNumber('rewrite_confidence')
   requireString('ai_model_used')
   requireString('ai_prompt_version')
 
   if (fields.length) return badRequest(fields)
+
+  // Coerce stringified JSON payloads (Make.com workaround).
+  const originalPayload = coerceJsonPayload(body.original_payload)
+  if (!originalPayload.ok) {
+    return NextResponse.json(
+      { error: originalPayload.error, field: 'original_payload' },
+      { status: 400 }
+    )
+  }
+  const proposedPatchPayload = coerceJsonPayload(body.proposed_patch_payload)
+  if (!proposedPatchPayload.ok) {
+    return NextResponse.json(
+      { error: proposedPatchPayload.error, field: 'proposed_patch_payload' },
+      { status: 400 }
+    )
+  }
+
+  // Validate the rewrite vs the original. Returns all failures, not just first.
+  const validationErrors = validateRewrite(
+    body.original_options as unknown[],
+    body.proposed_options as unknown[],
+    body.proposed_question_text as string
+  )
+  if (validationErrors.length) {
+    console.warn('[review-items] Validation failed', {
+      medvin_question_id: body.medvin_question_id,
+      errors: validationErrors,
+    })
+    return NextResponse.json(
+      { error: 'validation_failed', details: validationErrors },
+      { status: 400 }
+    )
+  }
 
   const sb = await createServiceRoleClient()
   const { data, error } = await sb
@@ -57,10 +95,10 @@ export const POST = withMakeAuth(async (request: NextRequest) => {
       length_ratio: body.length_ratio ?? null,
       original_question_text: body.original_question_text,
       original_options: body.original_options,
-      original_payload: body.original_payload,
+      original_payload: originalPayload.value,
       proposed_question_text: body.proposed_question_text,
       proposed_options: body.proposed_options,
-      proposed_patch_payload: body.proposed_patch_payload,
+      proposed_patch_payload: proposedPatchPayload.value,
       rewrite_confidence: body.rewrite_confidence,
       ai_model_used: body.ai_model_used,
       ai_prompt_version: body.ai_prompt_version,
