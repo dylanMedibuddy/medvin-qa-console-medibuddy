@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { Nav } from '@/components/nav'
-import { BANKS } from '@/lib/banks'
+import { listQuestionBanks, type MedvinBank } from '@/lib/medvin'
 import { RunForm } from './run-form'
 
 type Run = {
@@ -37,16 +37,31 @@ function formatDuration(startIso: string, endIso: string | null) {
   return `${h}h ${m % 60}m`
 }
 
+async function fetchBanksSafely(): Promise<
+  { ok: true; banks: MedvinBank[] } | { ok: false; error: string }
+> {
+  try {
+    const banks = await listQuestionBanks()
+    return { ok: true, banks }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export default async function RunsPage() {
   const supabase = await createClient()
-  const { data: runs, error } = await supabase
-    .from('runs')
-    .select(
-      'id, started_at, finished_at, question_bank_id, question_bank_title, total_scanned, total_flagged, total_errors, triggered_by, notes'
-    )
-    .order('started_at', { ascending: false })
-    .limit(100)
-    .returns<Run[]>()
+  const [runsResult, banksResult] = await Promise.all([
+    supabase
+      .from('runs')
+      .select(
+        'id, started_at, finished_at, question_bank_id, question_bank_title, total_scanned, total_flagged, total_errors, triggered_by, notes'
+      )
+      .order('started_at', { ascending: false })
+      .limit(100)
+      .returns<Run[]>(),
+    fetchBanksSafely(),
+  ])
+  const { data: runs, error } = runsResult
 
   return (
     <>
@@ -59,8 +74,18 @@ export default async function RunsPage() {
           </p>
         </header>
 
-        <div className="mb-8">
-          <RunForm banks={BANKS} />
+        <div className="mb-8 space-y-3">
+          {banksResult.ok ? (
+            <RunForm banks={banksResult.banks} />
+          ) : (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Couldn&apos;t reach Medvin to list banks: {banksResult.error}
+              <div className="mt-1 text-xs text-amber-800">
+                Check that <code>MEDVIN_ADMIN_EMAIL</code> /{' '}
+                <code>MEDVIN_ADMIN_PASSWORD</code> are set on the server.
+              </div>
+            </div>
+          )}
         </div>
 
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">

@@ -2,13 +2,13 @@
 
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import type { Bank } from '@/lib/banks'
+import type { MedvinBank } from '@/lib/medvin'
 
 type LastResult =
   | { ok: true; bank: { id: number; title: string }; triggered_at: string }
   | { ok: false; error: string }
 
-export function RunForm({ banks }: { banks: Bank[] }) {
+export function RunForm({ banks }: { banks: MedvinBank[] }) {
   const router = useRouter()
   const [bankId, setBankId] = useState<number | ''>(banks[0]?.id ?? '')
   const [pending, startTransition] = useTransition()
@@ -16,12 +16,17 @@ export function RunForm({ banks }: { banks: Bank[] }) {
 
   function trigger() {
     if (typeof bankId !== 'number') return
+    const bank = banks.find((b) => b.id === bankId)
+    if (!bank) return
     setResult(null)
     startTransition(async () => {
       const res = await fetch('/api/ui/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ question_bank_id: bankId }),
+        body: JSON.stringify({
+          question_bank_id: bank.id,
+          question_bank_title: bank.title,
+        }),
       })
       const json = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -46,7 +51,7 @@ export function RunForm({ banks }: { banks: Bank[] }) {
   if (banks.length === 0) {
     return (
       <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-        No banks configured. Edit <code>src/lib/banks.ts</code> to add some.
+        Medvin returned zero banks. Check the admin account&apos;s permissions.
       </div>
     )
   }

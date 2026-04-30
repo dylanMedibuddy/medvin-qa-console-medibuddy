@@ -303,7 +303,15 @@ Two scenarios live in Make.com (not in this repo):
 
 ### Bank list
 
-Edit `src/lib/banks.ts` to add or remove banks the "Run now" dropdown offers. Future enhancement: live fetch from Medvin's `GET /api/admin/question-banks`.
+The "Run now" dropdown is populated live from Medvin via `GET /api/admin/question-banks`. The app uses an admin account (read-only — this app never writes to Medvin) configured via these env vars on the server:
+
+```
+MEDVIN_BASE_URL=https://hub.medibuddy.co.uk
+MEDVIN_ADMIN_EMAIL=...
+MEDVIN_ADMIN_PASSWORD=...
+```
+
+The bearer token is cached in memory and refreshed automatically on a 401. If Medvin is unreachable, the page renders an amber warning above the dropdown rather than crashing.
 
 ## UI API
 

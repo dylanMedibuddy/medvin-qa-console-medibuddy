@@ -73,7 +73,7 @@ Statuses: `pending_review` → `approved_pending_push` | `rejected` → `pushed`
 - Inline edit mode on `/review/[id]`. The `/api/ui/review-items/:id/approve` endpoint already accepts `edited_proposal` with full validation; UI just doesn't expose it yet.
 - Keyboard shortcuts (A/R/E/J/K) on review screen.
 - `/admin/users` for role management; admin-bootstrap trigger to promote `ADMIN_BOOTSTRAP_EMAIL` on signup.
-- Live Medvin bank fetch (currently static list at `src/lib/banks.ts`).
+- Medvin client (`src/lib/medvin.ts`) is read-only and only used by the bank dropdown. All Medvin writes go through Make Scenario B, which has its own credentials. Don't add write methods here without explicit reason.
 - Approve/reject server actions are gone; the UI now calls `/api/ui/*` over fetch and the audit_log captures every transition with `actor_user_id` and a `diff` payload.
 
 ## Notes for future sessions
