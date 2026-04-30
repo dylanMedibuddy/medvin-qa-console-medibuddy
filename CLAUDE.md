@@ -70,11 +70,10 @@ Statuses: `pending_review` → `approved_pending_push` | `rejected` → `pushed`
 `review_items.patched_at` and `review_items.patch_response` are misnamed after migration 002 (semantically they're now `pushed_at` / `push_response`). Left in place to avoid invasive renames; rename when Scenario B is built.
 
 ## Outstanding
-- `GET /api/make/review-items?status=approved_pending_push` (Scenario B polling) — not yet built. Will replace the deleted `PATCH /patched` endpoint with a fresh push-result endpoint at the same time.
 - Inline edit mode on `/review/[id]`. The `/api/ui/review-items/:id/approve` endpoint already accepts `edited_proposal` with full validation; UI just doesn't expose it yet.
 - Keyboard shortcuts (A/R/E/J/K) on review screen.
-- `/runs` and `/audit` pages — nav links exist but currently 404.
-- `/admin/users` for role management.
+- `/admin/users` for role management; admin-bootstrap trigger to promote `ADMIN_BOOTSTRAP_EMAIL` on signup.
+- Live Medvin bank fetch (currently static list at `src/lib/banks.ts`).
 - Approve/reject server actions are gone; the UI now calls `/api/ui/*` over fetch and the audit_log captures every transition with `actor_user_id` and a `diff` payload.
 
 ## Notes for future sessions

@@ -223,11 +223,87 @@ curl -s -X POST "$API/api/make/review-items" \
 # → 400 { "error": "malformed_json", "field": "original_payload" }
 ```
 
-### 4. `GET /api/make/review-items?status=approved&not_patched=true` — Scenario B polling
+### 4. `GET /api/make/review-items?status=approved_pending_push&limit=50` — Scenario B polling
 
-**Not yet built.** Tracked as outstanding work in [CLAUDE.md](./CLAUDE.md). The Push system (Scenario B) is intentionally separate from this PR — see CONTEXT.md §5 for the planned shape.
+Make Scenario B polls this on a schedule to find items ready to push to Medvin. Returns items oldest-first (so retries don't starve fresh approvals).
 
-> The previous `PATCH /api/make/review-items/:id/patched` endpoint was removed as part of the lifecycle v2 migration. The new push-status endpoint will be added when Scenario B is built.
+```bash
+curl -s "$API/api/make/review-items?status=approved_pending_push&limit=50" \
+  -H "x-api-key: $KEY"
+# → 200 {
+#   "data": [
+#     {
+#       "id": "uuid",
+#       "medvin_question_id": 142,
+#       "medvin_question_bank_id": 7,
+#       "proposed_patch_payload": { /* ready to fire at Medvin */ },
+#       "reviewed_at": "..."
+#     }
+#   ]
+# }
+```
+
+`status` can be any lifecycle value (defaults to `approved_pending_push`). `limit` is clamped to 1..200, default 50.
+
+### 5. `PATCH /api/make/review-items/:id/pushed` — report push result
+
+Make Scenario B calls this after PATCHing Medvin to report success or failure.
+
+Allowed transitions: `approved_pending_push` → `pushed | push_error`, and `push_error` → `pushed | push_error` (retries).
+
+```bash
+# Success
+curl -s -X PATCH "$API/api/make/review-items/<ITEM_ID>/pushed" \
+  -H "x-api-key: $KEY" -H "content-type: application/json" \
+  -d '{"status": "pushed", "patch_response": {"updated": true}}'
+# → 200 { "ok": true }
+
+# Failure
+curl -s -X PATCH "$API/api/make/review-items/<ITEM_ID>/pushed" \
+  -H "x-api-key: $KEY" -H "content-type: application/json" \
+  -d '{"status": "push_error", "patch_response": {"status": 500, "body": "Medvin said no"}}'
+# → 200 { "ok": true }
+```
+
+## Make.com integration
+
+Two scenarios live in Make.com (not in this repo):
+
+### Scenario A — Detection + LLM rewrite
+
+**Trigger:** webhook (URL stored in env var `MAKE_SCENARIO_A_WEBHOOK_URL` on this app's server).
+
+**Payload received:**
+```json
+{
+  "question_bank_id": 7,
+  "question_bank_title": "Dundee Y1 CST",
+  "triggered_by": "ui:dylan@medibuddy.co.uk"
+}
+```
+
+**Make does:**
+1. `POST /api/make/runs` to open a run record (gets `run_id`)
+2. Iterate questions in the bank, run length-ratio detection, LLM-rewrite flagged ones
+3. For each flagged question: `POST /api/make/review-items` (must include `run_id`)
+4. `PATCH /api/make/runs/:id/finish` with totals when done
+
+**Trigger from UI:** the "Run now" button on `/runs` calls `POST /api/ui/runs` with `{question_bank_id}`. That endpoint POSTs to the Make webhook and returns immediately. The new run record is created by Make once Scenario A actually starts; expect 5-30s lag.
+
+### Scenario B — Push approved rewrites to Medvin
+
+**Trigger:** schedule (every N minutes).
+
+**Make does:**
+1. `GET /api/make/review-items?status=approved_pending_push&limit=50` to find work
+2. For each item: `PATCH https://<medvin>/api/admin/questions/{medvin_question_id}` with the `proposed_patch_payload`
+3. Report result back: `PATCH /api/make/review-items/:id/pushed` with `{status:"pushed"|"push_error", patch_response}`
+
+**No UI trigger** — approving an item flips it to `approved_pending_push`, and the next Scenario B tick picks it up automatically.
+
+### Bank list
+
+Edit `src/lib/banks.ts` to add or remove banks the "Run now" dropdown offers. Future enhancement: live fetch from Medvin's `GET /api/admin/question-banks`.
 
 ## UI API
 

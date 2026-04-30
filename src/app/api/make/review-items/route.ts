@@ -2,6 +2,57 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { createServiceRoleClient } from '@/lib/supabase/server'
 import { badRequest, isObject, withMakeAuth } from '@/lib/api/make-auth'
 import { coerceJsonPayload, validateRewrite } from '@/lib/api/review-validation'
+import type { ReviewStatus } from '@/lib/types'
+
+const POLLABLE_STATUSES: readonly ReviewStatus[] = [
+  'pending_review',
+  'approved_pending_push',
+  'rejected',
+  'pushed',
+  'push_error',
+]
+
+/**
+ * Polled by Make Scenario B to find items ready to push.
+ * Default behaviour returns approved_pending_push items, oldest-first
+ * (so retries don't starve fresh approvals).
+ *
+ * Query params:
+ *   status — one of the lifecycle values (default: approved_pending_push)
+ *   limit  — 1..200 (default: 50)
+ */
+export const GET = withMakeAuth(async (request: NextRequest) => {
+  const url = new URL(request.url)
+  const statusParam = url.searchParams.get('status') ?? 'approved_pending_push'
+  if (!POLLABLE_STATUSES.includes(statusParam as ReviewStatus)) {
+    return NextResponse.json(
+      { error: 'invalid_query', fields: ['status'] },
+      { status: 400 }
+    )
+  }
+  const rawLimit = parseInt(url.searchParams.get('limit') ?? '50', 10)
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(Math.max(rawLimit, 1), 200)
+    : 50
+
+  const sb = await createServiceRoleClient()
+  const { data, error } = await sb
+    .from('review_items')
+    .select(
+      'id, medvin_question_id, medvin_question_bank_id, proposed_patch_payload, reviewed_at'
+    )
+    .eq('status', statusParam)
+    .order('reviewed_at', { ascending: true, nullsFirst: false })
+    .limit(limit)
+
+  if (error) {
+    return NextResponse.json(
+      { error: 'db_error', detail: error.message },
+      { status: 500 }
+    )
+  }
+  return NextResponse.json({ data: data ?? [] })
+})
 
 export const POST = withMakeAuth(async (request: NextRequest) => {
   const body = (await request.json().catch(() => null)) as unknown

@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { Nav } from '@/components/nav'
+import { BANKS } from '@/lib/banks'
+import { RunForm } from './run-form'
 
 type Run = {
   id: string
@@ -53,9 +55,17 @@ export default async function RunsPage() {
         <header className="mb-6">
           <h1 className="text-2xl font-semibold text-neutral-900">Runs</h1>
           <p className="mt-1 text-sm text-neutral-500">
-            History of detection batches kicked off by Make Scenario A. Most recent first.
+            Trigger a new detection batch, or browse the history below.
           </p>
         </header>
+
+        <div className="mb-8">
+          <RunForm banks={BANKS} />
+        </div>
+
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+          History
+        </h2>
 
         {error ? (
           <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800">
