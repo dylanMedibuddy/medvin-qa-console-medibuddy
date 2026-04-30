@@ -26,6 +26,7 @@ export function RunForm({ banks }: { banks: MedvinBank[] }) {
         body: JSON.stringify({
           question_bank_id: bank.id,
           question_bank_title: bank.title,
+          enrollment_slug: bank.enrollment_slug,
         }),
       })
       const json = await res.json().catch(() => ({}))

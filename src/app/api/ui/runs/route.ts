@@ -5,7 +5,12 @@ import { isObject } from '@/lib/api/make-auth'
 /**
  * "Run now" — kicks off a Make Scenario A detection batch.
  *
- * Body: { question_bank_id: number, question_bank_title: string }
+ * Body: {
+ *   question_bank_id: number,
+ *   question_bank_title: string,
+ *   enrollment_slug: string  // derived from title; used by Make to hit
+ *                            //   /api/admin/enrollments/{slug}/questions
+ * }
  *
  * Posts the bank metadata to the Make webhook configured in
  * MAKE_SCENARIO_A_WEBHOOK_URL. Make is responsible for creating its own
@@ -20,6 +25,7 @@ export const POST = withUiAuth(async (request: NextRequest, _ctx, auth) => {
   const fields: string[] = []
   if (typeof body.question_bank_id !== 'number') fields.push('question_bank_id')
   if (typeof body.question_bank_title !== 'string') fields.push('question_bank_title')
+  if (typeof body.enrollment_slug !== 'string') fields.push('enrollment_slug')
   if (fields.length) {
     return NextResponse.json({ error: 'invalid_body', fields }, { status: 400 })
   }
@@ -39,6 +45,7 @@ export const POST = withUiAuth(async (request: NextRequest, _ctx, auth) => {
   const payload = {
     question_bank_id: body.question_bank_id,
     question_bank_title: body.question_bank_title,
+    enrollment_slug: body.enrollment_slug,
     triggered_by: triggeredBy,
   }
 

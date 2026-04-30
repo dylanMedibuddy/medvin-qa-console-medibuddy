@@ -12,7 +12,24 @@
 
 const DEFAULT_BASE_URL = 'https://hub.medibuddy.co.uk'
 
-export type MedvinBank = { id: number; title: string }
+export type MedvinBank = { id: number; title: string; enrollment_slug: string }
+
+/**
+ * Derive an enrollment slug from a bank title. Mirrors Laravel's Str::slug()
+ * (which Medvin uses): lowercase, replace non-alphanumeric chars with hyphens,
+ * collapse multiple hyphens, trim leading/trailing.
+ *
+ * Confirmed against hub.medibuddy.co.uk/api/admin/enrollments/{slug}/questions
+ * for: dundee-pre-clinical-year-1, aston-pre-clinical-year-1,
+ * cambridge-pre-clinical-year-1, ucl-pre-clinical-year-1,
+ * brighton-and-sussex-pre-clinical-year-1, etc.
+ */
+export function bankTitleToEnrollmentSlug(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
 
 let cachedToken: string | null = null
 let inflightLogin: Promise<string> | null = null
@@ -105,7 +122,12 @@ export async function listQuestionBanks(): Promise<MedvinBank[]> {
         (typeof o.name === 'string' && o.name) ||
         ''
       if (!Number.isFinite(id)) return null
-      return { id, title: title || `Bank ${id}` } as MedvinBank
+      const finalTitle = title || `Bank ${id}`
+      return {
+        id,
+        title: finalTitle,
+        enrollment_slug: bankTitleToEnrollmentSlug(finalTitle),
+      } as MedvinBank
     })
     .filter((b): b is MedvinBank => b !== null)
     .sort((a, b) => a.title.localeCompare(b.title))
