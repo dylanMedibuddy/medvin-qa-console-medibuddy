@@ -23,9 +23,21 @@ Internal Medibuddy tool for reviewing AI-generated rewrites of medical exam ques
 ## Routes
 
 - `/login` — Google SSO, restricted to `@medibuddy.co.uk`
-- `/queue` — pending review items
+- `/queue` — pending review items, with status / bank filters and bulk-action support
+- `/approved-pending-push` — items reviewers have approved, waiting to be pushed to Medvin
 - `/review/[id]` — side-by-side review with Approve / Reject
 - `/api/make/*` — Make.com integration endpoints (see below)
+- `/api/ui/*` — UI-triggered actions (approve / reject / bulk-action)
+
+## Lifecycle
+
+```
+            ┌─ approved_pending_push ──> pushed     (push success)
+pending ──┤                          \
+            └─ rejected                 push_error  (push failed)
+```
+
+`pending_review` is the only status from which user actions can transition. Once an item is `approved_pending_push`, the future Push scenario (Scenario B, separate task) flips it to `pushed` or `push_error`.
 
 ## Make API
 
@@ -211,52 +223,83 @@ curl -s -X POST "$API/api/make/review-items" \
 # → 400 { "error": "malformed_json", "field": "original_payload" }
 ```
 
-### 4. `PATCH /api/make/review-items/:id/patched` — report patch result
+### 4. `GET /api/make/review-items?status=approved&not_patched=true` — Scenario B polling
 
-Success:
-```bash
-curl -s -X PATCH "$API/api/make/review-items/<ITEM_ID>/patched" \
-  -H "x-api-key: $KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "status": "patched",
-    "patch_response": {"updated": true}
-  }'
-# → 200 { "ok": true }
+**Not yet built.** Tracked as outstanding work in [CLAUDE.md](./CLAUDE.md). The Push system (Scenario B) is intentionally separate from this PR — see CONTEXT.md §5 for the planned shape.
+
+> The previous `PATCH /api/make/review-items/:id/patched` endpoint was removed as part of the lifecycle v2 migration. The new push-status endpoint will be added when Scenario B is built.
+
+## UI API
+
+User-triggered actions live under `/api/ui/*`. They authenticate via the Supabase session cookie (Google SSO) and require the user's profile to have role `reviewer` or `admin`. They use the service-role client server-side for the mutation + audit_log writes.
+
+Test these from the browser console (they need your session cookie) rather than curl:
+
+```js
+// browser console — paste while signed in to the deployed app
+const id = '<review-item-id>'
+
+// approve
+await fetch(`/api/ui/review-items/${id}/approve`, {
+  method: 'POST',
+  headers: {'content-type': 'application/json'},
+  body: '{}',
+}).then(r => r.json())
+
+// approve with edits
+await fetch(`/api/ui/review-items/${id}/approve`, {
+  method: 'POST',
+  headers: {'content-type': 'application/json'},
+  body: JSON.stringify({
+    edited_proposal: {
+      proposed_question_text: '<p>Edited question text</p>',
+      proposed_options: [
+        {id: 101, option_text: '<p>Edited A</p>', is_correct: false, explanation: ''},
+        // ... must preserve all original ids and the original correct-set
+      ],
+      proposed_patch_payload: {edited: true},
+    },
+    reviewer_notes: 'Tightened the wording on option C.',
+  }),
+}).then(r => r.json())
+
+// reject
+await fetch(`/api/ui/review-items/${id}/reject`, {
+  method: 'POST',
+  headers: {'content-type': 'application/json'},
+  body: JSON.stringify({reject_reason: 'rewrite_wrong'}),
+}).then(r => r.json())
+
+// reject with reason "other" (notes required)
+await fetch(`/api/ui/review-items/${id}/reject`, {
+  method: 'POST',
+  headers: {'content-type': 'application/json'},
+  body: JSON.stringify({
+    reject_reason: 'other',
+    reviewer_notes: 'Question is fine but explanation is misleading.',
+  }),
+}).then(r => r.json())
+
+// bulk approve
+await fetch('/api/ui/review-items/bulk-action', {
+  method: 'POST',
+  headers: {'content-type': 'application/json'},
+  body: JSON.stringify({
+    review_item_ids: ['id-1', 'id-2', 'id-3'],
+    action: 'approve',
+  }),
+}).then(r => r.json())
+// → { succeeded: ['id-1', 'id-2'], skipped: [{id: 'id-3', reason: 'not_pending_review (was approved_pending_push)'}] }
 ```
 
-Error:
-```bash
-curl -s -X PATCH "$API/api/make/review-items/<ITEM_ID>/patched" \
-  -H "x-api-key: $KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "status": "patch_error",
-    "patch_response": {"status": 500, "body": "Medvin said no"}
-  }'
-# → 200 { "ok": true }
-```
+`reject_reason` values: `false_flag` · `rewrite_wrong` · `flag_correct_rewrite_failed` · `other` (notes required).
 
-Dry run (no `patched_at` is written):
-```bash
-curl -s -X PATCH "$API/api/make/review-items/<ITEM_ID>/patched" \
-  -H "x-api-key: $KEY" \
-  -H "content-type: application/json" \
-  -d '{
-    "status": "dry_run_would_patch",
-    "patch_response": null
-  }'
-# → 200 { "ok": true }
-```
-
-**Failure — invalid status:**
-```bash
-curl -s -X PATCH "$API/api/make/review-items/<ITEM_ID>/patched" \
-  -H "x-api-key: $KEY" \
-  -H "content-type: application/json" \
-  -d '{"status": "wat"}'
-# → 400 { "error": "invalid_body", "fields": ["status"] }
-```
+Common error responses:
+- `401 unauthorized` — not signed in
+- `403 forbidden` — signed in but profile role isn't reviewer/admin
+- `404 not_found` — review item id doesn't exist
+- `400 not_pending_review` — already actioned (race condition or stale UI)
+- `400 validation_failed` — edited proposal failed structural rules (see Make API §3 for the rules)
 
 ## Claude Code
 

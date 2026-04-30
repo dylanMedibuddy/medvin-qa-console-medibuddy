@@ -1,11 +1,22 @@
 export type ReviewStatus =
   | 'pending_review'
-  | 'approved'
+  | 'approved_pending_push'
   | 'rejected'
-  | 'patching'
-  | 'patched'
-  | 'patch_error'
-  | 'dry_run_would_patch'
+  | 'pushed'
+  | 'push_error'
+
+export type RejectReason =
+  | 'false_flag'
+  | 'rewrite_wrong'
+  | 'flag_correct_rewrite_failed'
+  | 'other'
+
+export const REJECT_REASONS: { value: RejectReason; label: string }[] = [
+  { value: 'false_flag', label: 'False flag — original was fine' },
+  { value: 'rewrite_wrong', label: 'Rewrite changes the answer or is medically wrong' },
+  { value: 'flag_correct_rewrite_failed', label: 'Flag was right but the rewrite is bad' },
+  { value: 'other', label: 'Other (notes required)' },
+]
 
 export type QuestionType =
   | 'single-choice'
@@ -47,4 +58,20 @@ export type ReviewItemRow = {
   patched_at: string | null
   created_at: string
   updated_at: string
+}
+
+export const STATUS_STYLES: Record<ReviewStatus, string> = {
+  pending_review: 'bg-amber-100 text-amber-800',
+  approved_pending_push: 'bg-emerald-100 text-emerald-800',
+  rejected: 'bg-neutral-200 text-neutral-700',
+  pushed: 'bg-blue-100 text-blue-800',
+  push_error: 'bg-red-100 text-red-800',
+}
+
+export const STATUS_LABELS: Record<ReviewStatus, string> = {
+  pending_review: 'Pending review',
+  approved_pending_push: 'Approved (ready to push)',
+  rejected: 'Rejected',
+  pushed: 'Pushed',
+  push_error: 'Push error',
 }

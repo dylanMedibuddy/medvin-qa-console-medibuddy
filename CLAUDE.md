@@ -61,9 +61,21 @@ The `hd` param is a hint to Google, not a guarantee — the server-side domain c
 - [ ] 10. /admin/users
 - [x] 11. Deploy to Railway — live at https://medvin-qa-console-medibuddy-production.up.railway.app
 
+## Lifecycle (after migration 002)
+
+Statuses: `pending_review` → `approved_pending_push` | `rejected` → `pushed` | `push_error`. The `approved` / `patching` / `patched` / `patch_error` / `dry_run_would_patch` statuses from the original schema were removed; data was migrated. See `supabase/migrations/002_review_lifecycle_v2.sql`.
+
+## Column naming caveat
+
+`review_items.patched_at` and `review_items.patch_response` are misnamed after migration 002 (semantically they're now `pushed_at` / `push_response`). Left in place to avoid invasive renames; rename when Scenario B is built.
+
 ## Outstanding
-- `GET /api/make/review-items?status=approved&not_patched=true` (CONTEXT.md §5) — not yet built. Scenario B needs this to poll for work.
-- User-initiated approve/reject actions don't write to audit_log (see "Notes for future sessions" above).
+- `GET /api/make/review-items?status=approved_pending_push` (Scenario B polling) — not yet built. Will replace the deleted `PATCH /patched` endpoint with a fresh push-result endpoint at the same time.
+- Inline edit mode on `/review/[id]`. The `/api/ui/review-items/:id/approve` endpoint already accepts `edited_proposal` with full validation; UI just doesn't expose it yet.
+- Keyboard shortcuts (A/R/E/J/K) on review screen.
+- `/runs` and `/audit` pages — nav links exist but currently 404.
+- `/admin/users` for role management.
+- Approve/reject server actions are gone; the UI now calls `/api/ui/*` over fetch and the audit_log captures every transition with `actor_user_id` and a `diff` payload.
 
 ## Notes for future sessions
 
