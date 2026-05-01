@@ -119,13 +119,19 @@ async function processBatch(items: Item[]): Promise<void> {
       return
     }
 
+    // Belt-and-braces: question_text is OFF-LIMITS for the rewriter.
+    // Overwrite whatever the model returned with the original verbatim.
+    // The prompt also tells it not to touch question_text, but we don't
+    // trust prompts as the only enforcement.
+    const finalQuestionText = item.original_question_text
+
     await sb
       .from('review_items')
       .update({
-        proposed_question_text: success.question_text,
+        proposed_question_text: finalQuestionText,
         proposed_options: success.options,
         proposed_patch_payload: {
-          question_text: success.question_text,
+          question_text: finalQuestionText,
           options: success.options,
         },
         rewrite_confidence: success.confidence,
