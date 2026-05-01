@@ -38,7 +38,9 @@ export async function chatComplete(opts: ChatOpts): Promise<string> {
           { role: 'system', content: opts.systemPrompt },
           { role: 'user', content: opts.userPrompt },
         ],
-        max_tokens: opts.maxTokens ?? 2048,
+        // Newer reasoning-style models (gpt-5+, o1, o3) require
+        // max_completion_tokens; older models accept it too.
+        max_completion_tokens: opts.maxTokens ?? 2048,
         temperature: opts.temperature ?? 1,
         response_format: opts.jsonMode ? { type: 'json_object' } : undefined,
       })
