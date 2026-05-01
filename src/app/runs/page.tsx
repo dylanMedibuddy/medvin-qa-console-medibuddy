@@ -57,9 +57,27 @@ async function fetchBanksSafely(): Promise<
   }
 }
 
+type RunBreakdown = {
+  pending_rewrite: number
+  pending_review: number
+  approved_pending_push: number
+  rejected: number
+  pushed: number
+  push_error: number
+}
+
+const EMPTY_BREAKDOWN: RunBreakdown = {
+  pending_rewrite: 0,
+  pending_review: 0,
+  approved_pending_push: 0,
+  rejected: 0,
+  pushed: 0,
+  push_error: 0,
+}
+
 export default async function RunsPage() {
   const supabase = await createClient()
-  const [runsResult, banksResult] = await Promise.all([
+  const [runsResult, banksResult, itemsForBreakdown] = await Promise.all([
     supabase
       .from('runs')
       .select(
@@ -69,8 +87,26 @@ export default async function RunsPage() {
       .limit(100)
       .returns<Run[]>(),
     fetchBanksSafely(),
+    // Pull just (run_id, status) for everything; we aggregate in memory.
+    // Light columns — even 5000 rows is < 200KB.
+    supabase
+      .from('review_items')
+      .select('run_id, status')
+      .not('run_id', 'is', null)
+      .returns<{ run_id: string; status: keyof RunBreakdown }[]>(),
   ])
   const { data: runs, error } = runsResult
+
+  const breakdownByRun = new Map<string, RunBreakdown>()
+  for (const row of itemsForBreakdown.data ?? []) {
+    if (!row.run_id) continue
+    let b = breakdownByRun.get(row.run_id)
+    if (!b) {
+      b = { ...EMPTY_BREAKDOWN }
+      breakdownByRun.set(row.run_id, b)
+    }
+    if (row.status in b) b[row.status]++
+  }
 
   return (
     <>
@@ -134,6 +170,17 @@ export default async function RunsPage() {
                   const page = run.cursor?.page
                   const showDetectionProgress =
                     run.state === 'detecting' && page != null
+                  const breakdown = breakdownByRun.get(run.id) ?? EMPTY_BREAKDOWN
+                  const rewrittenSoFar =
+                    breakdown.pending_review +
+                    breakdown.approved_pending_push +
+                    breakdown.rejected +
+                    breakdown.pushed +
+                    breakdown.push_error
+                  const rewriteTotal = run.total_flagged
+                  const showRewriteProgress =
+                    (run.state === 'rewriting' || run.state === 'finished') &&
+                    rewriteTotal > 0
                   return (
                     <tr key={run.id} className="hover:bg-neutral-50">
                       <td className="px-4 py-3 text-neutral-700 whitespace-nowrap">
@@ -158,16 +205,24 @@ export default async function RunsPage() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-neutral-600">
-                        {showDetectionProgress ? (
-                          <span>
+                        {showDetectionProgress && (
+                          <div>
                             page {page}
                             {run.total_pages != null && ` / ${run.total_pages}`}
-                          </span>
-                        ) : run.state === 'rewriting' ? (
-                          <span>rewriting flagged items…</span>
-                        ) : (
-                          '—'
+                          </div>
                         )}
+                        {showRewriteProgress && (
+                          <div>
+                            rewritten {rewrittenSoFar} / {rewriteTotal}
+                            {breakdown.pending_rewrite > 0 && (
+                              <span className="text-neutral-400">
+                                {' '}
+                                ({breakdown.pending_rewrite} queued)
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {!showDetectionProgress && !showRewriteProgress && '—'}
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-neutral-600">
                         {run.triggered_by ?? '—'}
