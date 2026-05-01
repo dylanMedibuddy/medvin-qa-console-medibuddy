@@ -22,6 +22,32 @@ type Run = {
   total_errors: number
 }
 
+// Tuned so each cron tick stays well under the 100s Cloudflare proxy timeout
+// even on a slow LLM. PAGE_SIZE × LATENCY / CONCURRENCY = expected wall time.
+// 50 questions × 3s / 10 parallel = ~15s per tick.
+const PAGE_SIZE = 50
+const DETECT_CONCURRENCY = 10
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (true) {
+      const i = next++
+      if (i >= items.length) return
+      results[i] = await fn(items[i], i)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  )
+  return results
+}
+
 function questionTypeSlug(q: MedvinQuestion): string {
   const t = q.question_type
   if (typeof t === 'string') return t
@@ -84,7 +110,7 @@ export const POST = withCronAuth(async () => {
 
   let pageResult
   try {
-    pageResult = await getEnrollmentQuestionsPage(run.enrollment_slug, page)
+    pageResult = await getEnrollmentQuestionsPage(run.enrollment_slug, page, PAGE_SIZE)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     await sb
@@ -99,18 +125,34 @@ export const POST = withCronAuth(async () => {
     await sb.from('runs').update({ total_pages: pageResult.lastPage }).eq('id', run.id)
   }
 
-  // Run detector on every question on this page (sequentially — keeps OpenAI
-  // RPM well under tier-1 limits at ~1 req/sec).
+  // Run detector on every question on this page in parallel (concurrency-capped).
+  // Sequential was too slow — 50 calls × 3s = 150s exceeded the 100s edge timeout.
+  type DetOutcome =
+    | { ok: true; question: MedvinQuestion; det: DetectionResult }
+    | { ok: false }
+
+  const outcomes = await mapWithConcurrency<MedvinQuestion, DetOutcome>(
+    pageResult.questions,
+    DETECT_CONCURRENCY,
+    async (q): Promise<DetOutcome> => {
+      try {
+        const det = await detect(q)
+        return { ok: true, question: q, det }
+      } catch (e) {
+        console.error('[cron/detect] detector failed', { question_id: q.id, err: e })
+        return { ok: false }
+      }
+    }
+  )
+
   const flagged: { question: MedvinQuestion; det: DetectionResult }[] = []
   let errors = 0
-  for (const q of pageResult.questions) {
-    try {
-      const det = await detect(q)
-      if (det.is_obvious) flagged.push({ question: q, det })
-    } catch (e) {
+  for (const o of outcomes) {
+    if (!o.ok) {
       errors++
-      console.error('[cron/detect] detector failed', { question_id: q.id, err: e })
+      continue
     }
+    if (o.det.is_obvious) flagged.push({ question: o.question, det: o.det })
   }
 
   // Insert flagged items. Uses upsert-style: ignore conflicts so reruns don't fail.
