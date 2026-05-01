@@ -42,7 +42,11 @@ export default async function QueuePage({
     )
   if (statuses.length) query = query.in('status', statuses)
   if (bankId !== null) query = query.eq('medvin_question_bank_id', bankId)
-  query = query.order('detected_at', { ascending: false }).limit(100)
+  // Up to 1000. Beyond that we'd want proper pagination — flag if you ever
+  // see this many. Realistically a single bank scan tops out around 500-700
+  // flagged items.
+  const ITEMS_LIMIT = 1000
+  query = query.order('detected_at', { ascending: false }).limit(ITEMS_LIMIT)
 
   // Counts (always against full status set, not the current filter, so the
   // header summary is meaningful regardless of what's filtered)

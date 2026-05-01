@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { Nav } from '@/components/nav'
 import { listQuestionBanks, type MedvinBank } from '@/lib/medvin'
 import { RunForm } from './run-form'
+import { RunRowActions } from './run-row-actions'
 import {
   RUN_STATE_LABELS,
   RUN_STATE_STYLES,
@@ -160,6 +161,7 @@ export default async function RunsPage() {
                   <th className="px-4 py-3 font-medium text-right">Flagged</th>
                   <th className="px-4 py-3 font-medium text-right">Errors</th>
                   <th className="px-4 py-3 font-medium">Duration</th>
+                  <th className="px-4 py-3 font-medium"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
@@ -248,6 +250,9 @@ export default async function RunsPage() {
                       </td>
                       <td className="px-4 py-3 text-neutral-600 whitespace-nowrap">
                         {formatDuration(run.started_at, run.finished_at)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <RunRowActions runId={run.id} state={run.state} />
                       </td>
                     </tr>
                   )
