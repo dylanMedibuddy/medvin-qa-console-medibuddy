@@ -32,7 +32,7 @@ export const POST = withUiAuth(async (request: NextRequest, _ctx: unknown, auth)
       { status: 400 }
     )
   }
-  if (action !== 'approve' && action !== 'reject') {
+  if (action !== 'approve' && action !== 'reject' && action !== 'delete') {
     return NextResponse.json({ error: 'invalid_body', fields: ['action'] }, { status: 400 })
   }
   if (action === 'reject') {
@@ -55,6 +55,35 @@ export const POST = withUiAuth(async (request: NextRequest, _ctx: unknown, auth)
   }
 
   const stringIds = ids as string[]
+
+  // Delete is destructive and works on items in any status. Audit_log rows
+  // for deleted items cascade away with them — there's no trail of the
+  // deletion afterwards.
+  if (action === 'delete') {
+    const { data: deleted, error: deleteErr } = await auth.serviceRole
+      .from('review_items')
+      .delete()
+      .in('id', stringIds)
+      .select('id')
+
+    if (deleteErr) {
+      return NextResponse.json(
+        { error: 'db_error', detail: deleteErr.message },
+        { status: 500 }
+      )
+    }
+
+    const deletedSet = new Set((deleted ?? []).map((d) => d.id))
+    const succeeded: string[] = []
+    const skipped: { id: string; reason: string }[] = []
+    for (const id of stringIds) {
+      if (deletedSet.has(id)) succeeded.push(id)
+      else skipped.push({ id, reason: 'not_found' })
+    }
+    return NextResponse.json({ succeeded, skipped })
+  }
+
+  // approve / reject path: fetch first so we can skip non-pending items cleanly.
   const { data: existing, error: fetchErr } = await auth.serviceRole
     .from('review_items')
     .select('id, status')

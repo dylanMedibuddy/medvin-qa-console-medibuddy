@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { Nav } from '@/components/nav'
 import { Filters } from './filters'
 import { QueueTable } from './queue-table'
+import { listQuestionBanks } from '@/lib/medvin'
 import type { ReviewStatus } from '@/lib/types'
 
 const ALL_STATUSES: ReviewStatus[] = [
@@ -59,11 +60,17 @@ export default async function QueuePage({
     .from('review_items')
     .select('medvin_question_bank_id')
 
-  const [{ data: items, error }, banksRes, ...countResults] = await Promise.all([
-    query,
-    banksQuery,
-    ...countQueries,
-  ])
+  // Live bank titles from Medvin (best-effort; falls back to "Bank #N" in the
+  // table if Medvin is unreachable).
+  const medvinBanksPromise = listQuestionBanks().catch(() => null)
+
+  const [{ data: items, error }, banksRes, medvinBanks, ...countResults] =
+    await Promise.all([query, banksQuery, medvinBanksPromise, ...countQueries])
+
+  const bankTitleById: Record<number, string> = {}
+  for (const b of medvinBanks ?? []) {
+    bankTitleById[b.id] = b.title
+  }
 
   const counts = ALL_STATUSES.reduce<Record<ReviewStatus, number>>((acc, s, i) => {
     acc[s] = countResults[i]?.count ?? 0
@@ -110,7 +117,10 @@ export default async function QueuePage({
             Failed to load queue: {error.message}
           </div>
         ) : (
-          <QueueTable items={(items ?? []) as Parameters<typeof QueueTable>[0]['items']} />
+          <QueueTable
+            items={(items ?? []) as Parameters<typeof QueueTable>[0]['items']}
+            bankTitleById={bankTitleById}
+          />
         )}
       </main>
     </>
