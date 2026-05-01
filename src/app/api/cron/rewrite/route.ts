@@ -14,6 +14,7 @@ import {
 import { validateRewrite } from '@/lib/api/review-validation'
 
 const BATCH_SIZE = 10
+const REWRITE_CONCURRENCY = 5
 
 type Item = {
   id: string
@@ -39,52 +40,39 @@ async function rewriteOne(item: Item): Promise<RewriteResult> {
   })
 }
 
-/**
- * POST /api/cron/rewrite
- *
- * Picks up to BATCH_SIZE items in `status='pending_rewrite'`, runs the AI
- * rewriter on each, validates the rewrite against the original, and either:
- *   - flips status to `pending_review` with proposed_* populated (success)
- *   - flips status to `rejected` with reviewer_notes explaining the failure
- *     (rewriter said it couldn't do it, or output failed validation)
- *
- * After the batch, checks if any `state='rewriting'` runs have no remaining
- * pending_rewrite items — if so, flips the run to `state='finished'`.
- */
-export const POST = withCronAuth(async () => {
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (true) {
+      const i = next++
+      if (i >= items.length) return
+      results[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  )
+  return results
+}
+
+async function processBatch(items: Item[]): Promise<void> {
   const sb = await createServiceRoleClient()
 
-  const { data: items, error: fetchErr } = await sb
-    .from('review_items')
-    .select(
-      'id, run_id, detection_reason, length_ratio, original_question_text, original_options'
-    )
-    .eq('status', 'pending_rewrite')
-    .order('created_at')
-    .limit(BATCH_SIZE)
-    .returns<Item[]>()
-
-  if (fetchErr) {
-    return NextResponse.json({ error: 'db_error', detail: fetchErr.message }, { status: 500 })
-  }
-
-  let succeeded = 0
-  let rewriterFailed = 0
-  let validationFailed = 0
-  let llmErrors = 0
-
-  for (const item of items ?? []) {
+  await mapWithConcurrency(items, REWRITE_CONCURRENCY, async (item) => {
     let result: RewriteResult
     try {
       result = await rewriteOne(item)
     } catch (e) {
-      llmErrors++
-      console.error('[cron/rewrite] LLM failed', { item_id: item.id, err: e })
-      continue
+      console.error('[cron/rewrite:bg] LLM failed', { item_id: item.id, err: e })
+      return
     }
 
     if (isRewriteFailed(result)) {
-      rewriterFailed++
       await sb
         .from('review_items')
         .update({
@@ -92,7 +80,7 @@ export const POST = withCronAuth(async () => {
           reviewer_notes: `[auto-rejected: rewriter] ${result.reason}`,
         })
         .eq('id', item.id)
-      continue
+      return
     }
 
     const success = result as RewriteSuccess
@@ -102,8 +90,7 @@ export const POST = withCronAuth(async () => {
       success.question_text
     )
     if (errors.length) {
-      validationFailed++
-      console.warn('[cron/rewrite] validation failed', {
+      console.warn('[cron/rewrite:bg] validation failed', {
         item_id: item.id,
         errors,
       })
@@ -114,7 +101,7 @@ export const POST = withCronAuth(async () => {
           reviewer_notes: `[auto-rejected: validation] ${errors.join('; ')}`,
         })
         .eq('id', item.id)
-      continue
+      return
     }
 
     await sb
@@ -132,19 +119,69 @@ export const POST = withCronAuth(async () => {
         status: 'pending_review',
       })
       .eq('id', item.id)
-    succeeded++
+  })
+
+  await finishCompletedRuns(sb)
+}
+
+let inflight: Promise<void> | null = null
+
+/**
+ * POST /api/cron/rewrite
+ *
+ * Returns 202 immediately and processes a batch in the background. Designed
+ * to play nicely with cron-job.org's 30s request timeout. Idempotent — if
+ * the process dies mid-batch, the unprocessed items remain `pending_rewrite`
+ * and the next cron tick picks them up.
+ */
+export const POST = withCronAuth(async () => {
+  if (inflight) {
+    return NextResponse.json({
+      ok: true,
+      accepted: false,
+      note: 'previous tick still running',
+    })
   }
 
-  // After the batch, finish any rewriting runs that have no pending items left.
-  await finishCompletedRuns(sb)
+  const sb = await createServiceRoleClient()
+
+  const { data: items, error: fetchErr } = await sb
+    .from('review_items')
+    .select(
+      'id, run_id, detection_reason, length_ratio, original_question_text, original_options'
+    )
+    .eq('status', 'pending_rewrite')
+    .order('created_at')
+    .limit(BATCH_SIZE)
+    .returns<Item[]>()
+
+  if (fetchErr) {
+    return NextResponse.json({ error: 'db_error', detail: fetchErr.message }, { status: 500 })
+  }
+
+  if (!items?.length) {
+    // No items pending; opportunistically finish any rewriting runs that are done
+    await finishCompletedRuns(sb)
+    return NextResponse.json({
+      ok: true,
+      accepted: false,
+      note: 'no pending_rewrite items',
+    })
+  }
+
+  inflight = processBatch(items)
+    .catch((e) => {
+      console.error('[cron/rewrite] background task threw', e)
+    })
+    .finally(() => {
+      inflight = null
+    })
 
   return NextResponse.json({
     ok: true,
-    processed: items?.length ?? 0,
-    succeeded,
-    rewriter_failed: rewriterFailed,
-    validation_failed: validationFailed,
-    llm_errors: llmErrors,
+    accepted: true,
+    batch_size: items.length,
+    note: 'processing in background',
   })
 })
 

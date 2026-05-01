@@ -22,9 +22,6 @@ type Run = {
   total_errors: number
 }
 
-// Tuned so each cron tick stays well under the 100s Cloudflare proxy timeout
-// even on a slow LLM. PAGE_SIZE × LATENCY / CONCURRENCY = expected wall time.
-// 50 questions × 3s / 10 parallel = ~15s per tick.
 const PAGE_SIZE = 50
 const DETECT_CONCURRENCY = 10
 
@@ -69,64 +66,31 @@ async function detect(question: MedvinQuestion): Promise<DetectionResult> {
 }
 
 /**
- * POST /api/cron/detect
- *
- * Picks the oldest run in `state='detecting'`, fetches its next page from
- * Medvin, runs the AI detector on each question, and inserts flagged ones as
- * `pending_rewrite` review_items. Advances the cursor by one page.
- *
- * When the page is past the bank's last_page, flips the run to `state='rewriting'`.
- *
- * Idempotent — duplicate inserts blocked by the partial unique index.
+ * Process one page of detection in the background. Idempotent — if this
+ * fails partway, the cursor isn't advanced and the next cron tick retries
+ * the same page (duplicate inserts blocked by the partial unique index).
  */
-export const POST = withCronAuth(async () => {
+async function processOnePage(run: Run): Promise<void> {
   const sb = await createServiceRoleClient()
-
-  const { data: run, error: runErr } = await sb
-    .from('runs')
-    .select(
-      'id, question_bank_id, enrollment_slug, cursor, total_pages, total_scanned, total_flagged, total_errors'
-    )
-    .eq('state', 'detecting')
-    .order('started_at')
-    .limit(1)
-    .maybeSingle<Run>()
-
-  if (runErr) {
-    return NextResponse.json({ error: 'db_error', detail: runErr.message }, { status: 500 })
-  }
-  if (!run) {
-    return NextResponse.json({ ok: true, processed: 0, note: 'no detecting runs' })
-  }
-  if (!run.enrollment_slug) {
-    await sb
-      .from('runs')
-      .update({ state: 'error', error_message: 'enrollment_slug not set on run' })
-      .eq('id', run.id)
-    return NextResponse.json({ error: 'invalid_run', run_id: run.id }, { status: 500 })
-  }
-
   const page = run.cursor?.page ?? 1
 
   let pageResult
   try {
-    pageResult = await getEnrollmentQuestionsPage(run.enrollment_slug, page, PAGE_SIZE)
+    pageResult = await getEnrollmentQuestionsPage(run.enrollment_slug!, page, PAGE_SIZE)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     await sb
       .from('runs')
       .update({ state: 'error', error_message: `Medvin fetch failed: ${msg}` })
       .eq('id', run.id)
-    return NextResponse.json({ error: 'medvin_fetch_failed', detail: msg }, { status: 500 })
+    console.error('[cron/detect:bg] medvin fetch failed', { run_id: run.id, page, msg })
+    return
   }
 
-  // Capture total_pages on first page so the UI can show progress.
   if (page === 1 && run.total_pages == null && pageResult.lastPage != null) {
     await sb.from('runs').update({ total_pages: pageResult.lastPage }).eq('id', run.id)
   }
 
-  // Run detector on every question on this page in parallel (concurrency-capped).
-  // Sequential was too slow — 50 calls × 3s = 150s exceeded the 100s edge timeout.
   type DetOutcome =
     | { ok: true; question: MedvinQuestion; det: DetectionResult }
     | { ok: false; error: string }
@@ -140,7 +104,10 @@ export const POST = withCronAuth(async () => {
         return { ok: true, question: q, det }
       } catch (e) {
         const error = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
-        console.error('[cron/detect] detector failed', { question_id: q.id, error })
+        console.error('[cron/detect:bg] detector failed', {
+          question_id: q.id,
+          error,
+        })
         return { ok: false, error }
       }
     }
@@ -148,17 +115,14 @@ export const POST = withCronAuth(async () => {
 
   const flagged: { question: MedvinQuestion; det: DetectionResult }[] = []
   let errors = 0
-  let firstError: string | null = null
   for (const o of outcomes) {
     if (!o.ok) {
       errors++
-      if (!firstError) firstError = o.error
       continue
     }
     if (o.det.is_obvious) flagged.push({ question: o.question, det: o.det })
   }
 
-  // Insert flagged items. Uses upsert-style: ignore conflicts so reruns don't fail.
   const inserted: string[] = []
   for (const { question, det } of flagged) {
     const insertRow = {
@@ -186,17 +150,17 @@ export const POST = withCronAuth(async () => {
       .select('id')
       .maybeSingle()
     if (error) {
-      // 23505 = duplicate; means the question was already flagged in a prior
-      // run and isn't yet pushed — skip silently.
       if ((error as { code?: string }).code !== '23505') {
-        console.error('[cron/detect] insert failed', { question_id: question.id, err: error })
+        console.error('[cron/detect:bg] insert failed', {
+          question_id: question.id,
+          err: error,
+        })
       }
       continue
     }
     if (data?.id) inserted.push(data.id)
   }
 
-  // Advance cursor.
   const nextPage = page + 1
   const isLast = pageResult.lastPage != null && page >= pageResult.lastPage
   const updates: Record<string, unknown> = {
@@ -210,15 +174,77 @@ export const POST = withCronAuth(async () => {
   }
   await sb.from('runs').update(updates).eq('id', run.id)
 
-  return NextResponse.json({
-    ok: true,
+  console.log('[cron/detect:bg] done', {
     run_id: run.id,
     page,
     last_page: pageResult.lastPage,
-    questions_on_page: pageResult.questions.length,
     flagged: inserted.length,
-    detector_errors: errors,
-    first_detector_error: firstError,
-    state: isLast ? 'rewriting' : 'detecting',
+    errors,
+  })
+}
+
+// Module-level guard so concurrent cron pings don't double-process the same
+// run. Cron-job.org could fire two ticks in quick succession; this throws away
+// the second one cheaply at the HTTP layer.
+let inflight: Promise<void> | null = null
+
+/**
+ * POST /api/cron/detect
+ *
+ * Returns 202 immediately and processes the page in the background. The
+ * actual work is shaped to be idempotent (partial unique index on the
+ * pending status set) so a process restart mid-page just causes a retry.
+ *
+ * Designed to play nicely with cron-job.org's 30s request timeout.
+ */
+export const POST = withCronAuth(async () => {
+  if (inflight) {
+    return NextResponse.json({
+      ok: true,
+      accepted: false,
+      note: 'previous tick still running',
+    })
+  }
+
+  const sb = await createServiceRoleClient()
+  const { data: run, error: runErr } = await sb
+    .from('runs')
+    .select(
+      'id, question_bank_id, enrollment_slug, cursor, total_pages, total_scanned, total_flagged, total_errors'
+    )
+    .eq('state', 'detecting')
+    .order('started_at')
+    .limit(1)
+    .maybeSingle<Run>()
+
+  if (runErr) {
+    return NextResponse.json({ error: 'db_error', detail: runErr.message }, { status: 500 })
+  }
+  if (!run) {
+    return NextResponse.json({ ok: true, accepted: false, note: 'no detecting runs' })
+  }
+  if (!run.enrollment_slug) {
+    await sb
+      .from('runs')
+      .update({ state: 'error', error_message: 'enrollment_slug not set on run' })
+      .eq('id', run.id)
+    return NextResponse.json({ error: 'invalid_run', run_id: run.id }, { status: 500 })
+  }
+
+  // Fire-and-forget: kick off the heavy work, return immediately.
+  inflight = processOnePage(run)
+    .catch((e) => {
+      console.error('[cron/detect] background task threw', e)
+    })
+    .finally(() => {
+      inflight = null
+    })
+
+  return NextResponse.json({
+    ok: true,
+    accepted: true,
+    run_id: run.id,
+    page: run.cursor?.page ?? 1,
+    note: 'processing in background',
   })
 })
