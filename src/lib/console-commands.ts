@@ -311,8 +311,12 @@ async function cmdPurgeLowConfidence(
     .filter(Boolean)
   const bankId = args.bank ? parseInt(args.bank, 10) : null
 
-  // Build the matching query
-  let q = sb.from('review_items').select('id, detection_confidence, status, medvin_question_bank_id')
+  // Build the matching query — pull enough columns for a useful preview
+  let q = sb
+    .from('review_items')
+    .select(
+      'id, medvin_question_id, medvin_question_bank_id, status, detection_confidence, detection_reason, length_ratio, original_question_text'
+    )
   if (statusFilter.length) q = q.in('status', statusFilter)
   if (bankId !== null && Number.isFinite(bankId)) {
     q = q.eq('medvin_question_bank_id', bankId)
@@ -330,6 +334,18 @@ async function cmdPurgeLowConfidence(
   const belowCount = total - nullCount
 
   if (!apply) {
+    // Show a preview of up to 10 items so the operator can sanity check.
+    const sample = (matches ?? []).slice(0, 10).map((r) => ({
+      medvin_question_id: r.medvin_question_id,
+      bank: r.medvin_question_bank_id,
+      status: r.status,
+      confidence: r.detection_confidence,
+      length_ratio: r.length_ratio,
+      reason: r.detection_reason,
+      preview: typeof r.original_question_text === 'string'
+        ? r.original_question_text.slice(0, 80)
+        : null,
+    }))
     return {
       type: 'json',
       data: {
@@ -343,6 +359,7 @@ async function cmdPurgeLowConfidence(
         include_null: includeNull,
         status_filter: statusFilter,
         bank: bankId,
+        sample_first_10: sample,
         note: 'Dry run. Add apply=true to actually delete.',
       },
     }
