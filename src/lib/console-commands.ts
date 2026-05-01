@@ -61,11 +61,15 @@ const HELP_TEXT = `Available commands:
   bank   <bank_id>                          review_items breakdown for a bank
   item   <medvin_question_id>               review_item by Medvin question id
 
+Destructive (require apply=true to actually run; default is dry-run):
+  purge_low_confidence threshold=0.75 [include_null=true] [status=pending_review,pending_rewrite] [bank=N] [apply=true]
+                                            delete review_items below detector confidence threshold
+
 Notes:
   - Args are key=value or positional. e.g. "logs level=error limit=10"
   - level: debug | info | warn | error
   - state: detecting | rewriting | finished | cancelled | error
-  - All commands read-only.`
+  - Read commands are RLS-bypassed (service role) — see all rows.`
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n))
@@ -276,6 +280,116 @@ async function cmdItem(
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Destructive commands                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * purge_low_confidence — delete review_items below a detector confidence
+ * threshold. Defaults to dry-run (returns the count without deleting); pass
+ * apply=true to actually delete.
+ *
+ * By default scoped to status in (pending_review, pending_rewrite) so we
+ * don't auto-nuke already-actioned items. Default include_null=true treats
+ * legacy items (created before detection_confidence existed) as low-conf.
+ */
+async function cmdPurgeLowConfidence(
+  sb: SupabaseClient,
+  args: Record<string, string>
+): Promise<CommandOutput> {
+  const threshold = parseFloat(args.threshold ?? '')
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+    return {
+      type: 'error',
+      text: 'usage: purge_low_confidence threshold=<0..1> [include_null=true|false] [status=...] [bank=N] [apply=true]',
+    }
+  }
+  const includeNull = (args.include_null ?? 'true').toLowerCase() !== 'false'
+  const apply = (args.apply ?? '').toLowerCase() === 'true'
+  const statusFilter = (args.status ?? 'pending_review,pending_rewrite')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const bankId = args.bank ? parseInt(args.bank, 10) : null
+
+  // Build the matching query
+  let q = sb.from('review_items').select('id, detection_confidence, status, medvin_question_bank_id')
+  if (statusFilter.length) q = q.in('status', statusFilter)
+  if (bankId !== null && Number.isFinite(bankId)) {
+    q = q.eq('medvin_question_bank_id', bankId)
+  }
+  if (includeNull) {
+    q = q.or(`detection_confidence.lt.${threshold},detection_confidence.is.null`)
+  } else {
+    q = q.lt('detection_confidence', threshold)
+  }
+  const { data: matches, error } = await q
+  if (error) return { type: 'error', text: error.message }
+
+  const total = matches?.length ?? 0
+  const nullCount = (matches ?? []).filter((r) => r.detection_confidence == null).length
+  const belowCount = total - nullCount
+
+  if (!apply) {
+    return {
+      type: 'json',
+      data: {
+        dry_run: true,
+        would_delete: total,
+        breakdown: {
+          below_threshold: belowCount,
+          null_confidence: nullCount,
+        },
+        threshold,
+        include_null: includeNull,
+        status_filter: statusFilter,
+        bank: bankId,
+        note: 'Dry run. Add apply=true to actually delete.',
+      },
+    }
+  }
+
+  if (total === 0) {
+    return { type: 'text', text: 'Nothing to delete.' }
+  }
+
+  const ids = (matches ?? []).map((r) => r.id)
+  // Chunk delete to keep individual queries under the URL length limit.
+  const CHUNK = 200
+  let deleted = 0
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK)
+    const { data: del, error: delErr } = await sb
+      .from('review_items')
+      .delete()
+      .in('id', chunk)
+      .select('id')
+    if (delErr) {
+      return {
+        type: 'error',
+        text: `partial: deleted ${deleted}/${total} before failing on: ${delErr.message}`,
+      }
+    }
+    deleted += del?.length ?? 0
+  }
+
+  return {
+    type: 'json',
+    data: {
+      dry_run: false,
+      deleted,
+      breakdown: {
+        below_threshold: belowCount,
+        null_confidence: nullCount,
+      },
+      threshold,
+      include_null: includeNull,
+      status_filter: statusFilter,
+      bank: bankId,
+    },
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Dispatcher                                                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -301,6 +415,8 @@ export async function executeCommand(
       return cmdBank(sb, parsed.positional)
     case 'item':
       return cmdItem(sb, parsed.positional)
+    case 'purge_low_confidence':
+      return cmdPurgeLowConfidence(sb, parsed.args)
     default:
       return {
         type: 'error',
