@@ -12,11 +12,29 @@ import { ReviewControls } from './controls'
 
 type PageProps = { params: Promise<{ id: string }> }
 
+/** True if the string contains any HTML tags. */
+function looksLikeHtml(s: string): boolean {
+  return /<[a-z][\s\S]*?>/i.test(s)
+}
+
 function HtmlBlock({ html }: { html: string }) {
+  // Defensive: many rewrites come back as plain text (no <p>/<div> wrapping).
+  // dangerouslySetInnerHTML on plain text occasionally renders empty depending
+  // on browser whitespace handling. Render plain text as React text directly.
+  const content = html ?? ''
+  if (!looksLikeHtml(content)) {
+    return (
+      <div className="whitespace-pre-wrap text-sm leading-6 text-neutral-800">
+        {content || (
+          <span className="italic text-neutral-400">(empty)</span>
+        )}
+      </div>
+    )
+  }
   return (
     <div
-      className="prose prose-sm prose-neutral max-w-none text-neutral-800"
-      dangerouslySetInnerHTML={{ __html: html }}
+      className="prose prose-sm prose-neutral max-w-none text-sm leading-6 text-neutral-800"
+      dangerouslySetInnerHTML={{ __html: content }}
     />
   )
 }
