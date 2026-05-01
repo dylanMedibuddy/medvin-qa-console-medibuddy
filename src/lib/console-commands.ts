@@ -179,18 +179,37 @@ async function cmdRun(
 ): Promise<CommandOutput> {
   const idPrefix = positional[0]
   if (!idPrefix) return { type: 'error', text: 'usage: run <run_id_prefix>' }
-  const { data: matches } = await sb
+
+  // ilike on uuid columns is unreliable through Supabase JS — fetch a recent
+  // window of runs and prefix-match client-side. Runs table stays small enough
+  // that this is cheap.
+  const { data: candidates } = await sb
+    .from('runs')
+    .select('id')
+    .order('started_at', { ascending: false })
+    .limit(500)
+  const matches = (candidates ?? []).filter((r) =>
+    r.id.toLowerCase().startsWith(idPrefix.toLowerCase())
+  )
+  if (matches.length === 0) {
+    return { type: 'error', text: `no run with id starting with "${idPrefix}"` }
+  }
+  if (matches.length > 1) {
+    return {
+      type: 'error',
+      text: `prefix "${idPrefix}" matches ${matches.length} runs — be more specific`,
+    }
+  }
+
+  const { data: run } = await sb
     .from('runs')
     .select('*')
-    .ilike('id', `${idPrefix}%`)
-    .limit(2)
-  if (!matches?.length) return { type: 'error', text: `no run with id starting with "${idPrefix}"` }
-  if (matches.length > 1) return { type: 'error', text: `id prefix "${idPrefix}" is ambiguous` }
-  const run = matches[0]
+    .eq('id', matches[0].id)
+    .single()
   const { data: items } = await sb
     .from('review_items')
     .select('status')
-    .eq('run_id', run.id)
+    .eq('run_id', matches[0].id)
   const breakdown: Record<string, number> = {}
   for (const i of items ?? []) breakdown[i.status] = (breakdown[i.status] ?? 0) + 1
   return {
