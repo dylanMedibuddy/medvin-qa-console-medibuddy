@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { signOut } from '@/app/actions/sign-out'
 
-type ActiveKey = 'queue' | 'approved' | 'runs' | 'audit'
+type ActiveKey = 'queue' | 'approved' | 'runs' | 'audit' | 'console'
 
 async function getCounts() {
   const sb = await createClient()
@@ -41,6 +41,7 @@ export async function Nav({ active }: { active: ActiveKey }) {
     },
     { key: 'runs', label: 'Runs', href: '/runs' },
     { key: 'audit', label: 'Audit', href: '/audit' },
+    { key: 'console', label: 'Console', href: '/admin/console' },
   ]
 
   return (

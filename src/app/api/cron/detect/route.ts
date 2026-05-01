@@ -3,6 +3,7 @@ import { withCronAuth } from '@/lib/api/cron-auth'
 import { createServiceRoleClient } from '@/lib/supabase/server'
 import { getEnrollmentQuestionsPage, type MedvinQuestion } from '@/lib/medvin'
 import { chatCompleteJson } from '@/lib/llm'
+import { logError, logInfo, logWarn } from '@/lib/logging'
 import {
   DETECT_MODEL,
   DETECT_PROMPT_VERSION,
@@ -83,7 +84,11 @@ async function processOnePage(run: Run): Promise<void> {
       .from('runs')
       .update({ state: 'error', error_message: `Medvin fetch failed: ${msg}` })
       .eq('id', run.id)
-    console.error('[cron/detect:bg] medvin fetch failed', { run_id: run.id, page, msg })
+    await logError('cron.detect', `Medvin fetch failed for page ${page}`, {
+      run_id: run.id,
+      page,
+      error: msg,
+    })
     return
   }
 
@@ -104,7 +109,8 @@ async function processOnePage(run: Run): Promise<void> {
         return { ok: true, question: q, det }
       } catch (e) {
         const error = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
-        console.error('[cron/detect:bg] detector failed', {
+        await logError('cron.detect', 'detector LLM call failed', {
+          run_id: run.id,
           question_id: q.id,
           error,
         })
@@ -174,12 +180,14 @@ async function processOnePage(run: Run): Promise<void> {
   }
   await sb.from('runs').update(updates).eq('id', run.id)
 
-  console.log('[cron/detect:bg] done', {
+  await logInfo('cron.detect', `Page ${page} done — ${inserted.length} flagged of ${pageResult.questions.length} scanned`, {
     run_id: run.id,
     page,
     last_page: pageResult.lastPage,
+    questions_scanned: pageResult.questions.length,
     flagged: inserted.length,
     errors,
+    is_last_page: isLast,
   })
 }
 

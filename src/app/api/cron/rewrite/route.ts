@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { withCronAuth } from '@/lib/api/cron-auth'
 import { createServiceRoleClient } from '@/lib/supabase/server'
 import { chatCompleteJson } from '@/lib/llm'
+import { logError, logInfo, logWarn } from '@/lib/logging'
 import {
   REWRITE_MODEL,
   REWRITE_PROMPT_VERSION,
@@ -62,17 +63,27 @@ async function mapWithConcurrency<T, R>(
 
 async function processBatch(items: Item[]): Promise<void> {
   const sb = await createServiceRoleClient()
+  let succeeded = 0
+  let rewriterFailed = 0
+  let validationFailed = 0
+  let llmErrors = 0
 
   await mapWithConcurrency(items, REWRITE_CONCURRENCY, async (item) => {
     let result: RewriteResult
     try {
       result = await rewriteOne(item)
     } catch (e) {
-      console.error('[cron/rewrite:bg] LLM failed', { item_id: item.id, err: e })
+      llmErrors++
+      const error = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+      await logError('cron.rewrite', 'rewriter LLM call failed', {
+        review_item_id: item.id,
+        error,
+      })
       return
     }
 
     if (isRewriteFailed(result)) {
+      rewriterFailed++
       await sb
         .from('review_items')
         .update({
@@ -80,6 +91,9 @@ async function processBatch(items: Item[]): Promise<void> {
           reviewer_notes: `[auto-rejected: rewriter] ${result.reason}`,
         })
         .eq('id', item.id)
+      await logWarn('cron.rewrite', `Rewriter declined: ${result.reason}`, {
+        review_item_id: item.id,
+      })
       return
     }
 
@@ -90,9 +104,10 @@ async function processBatch(items: Item[]): Promise<void> {
       success.question_text
     )
     if (errors.length) {
-      console.warn('[cron/rewrite:bg] validation failed', {
-        item_id: item.id,
-        errors,
+      validationFailed++
+      await logWarn('cron.rewrite', `Rewrite failed validation: ${errors.join('; ')}`, {
+        review_item_id: item.id,
+        validation_errors: errors,
       })
       await sb
         .from('review_items')
@@ -119,7 +134,14 @@ async function processBatch(items: Item[]): Promise<void> {
         status: 'pending_review',
       })
       .eq('id', item.id)
+    succeeded++
   })
+
+  await logInfo(
+    'cron.rewrite',
+    `Batch done — ${succeeded} ok, ${rewriterFailed} declined, ${validationFailed} invalid, ${llmErrors} LLM errors`,
+    { processed: items.length, succeeded, rewriterFailed, validationFailed, llmErrors }
+  )
 
   await finishCompletedRuns(sb)
 }
