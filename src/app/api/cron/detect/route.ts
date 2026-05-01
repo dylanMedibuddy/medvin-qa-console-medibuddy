@@ -26,6 +26,17 @@ type Run = {
 const PAGE_SIZE = 50
 const DETECT_CONCURRENCY = 10
 
+/**
+ * Minimum detector confidence required to flag an item. Default 0.75 — chosen
+ * after the first Dundee Y1 run produced ~14% flag rate (probably too high).
+ * Tune via env var without redeploying. Range 0..1; lower = more flags.
+ */
+const MIN_FLAG_CONFIDENCE = (() => {
+  const raw = process.env.DETECT_MIN_CONFIDENCE
+  const parsed = raw == null ? NaN : parseFloat(raw)
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0.75
+})()
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -121,12 +132,23 @@ async function processOnePage(run: Run): Promise<void> {
 
   const flagged: { question: MedvinQuestion; det: DetectionResult }[] = []
   let errors = 0
+  let lowConfidenceSkipped = 0
   for (const o of outcomes) {
     if (!o.ok) {
       errors++
       continue
     }
-    if (o.det.is_obvious) flagged.push({ question: o.question, det: o.det })
+    if (!o.det.is_obvious) continue
+    // Hard confidence floor — even if the model says is_obvious=true, we
+    // don't flag unless it's at least somewhat sure. Cuts noisy false positives.
+    if (
+      typeof o.det.confidence !== 'number' ||
+      o.det.confidence < MIN_FLAG_CONFIDENCE
+    ) {
+      lowConfidenceSkipped++
+      continue
+    }
+    flagged.push({ question: o.question, det: o.det })
   }
 
   const inserted: string[] = []
@@ -142,6 +164,7 @@ async function processOnePage(run: Run): Promise<void> {
       medvin_unit_id: typeof question.unit_id === 'number' ? question.unit_id : null,
       question_type: questionTypeSlug(question),
       detection_reason: det.reason,
+      detection_confidence: det.confidence,
       length_ratio: det.length_ratio,
       original_question_text: question.question_text,
       original_options: question.options,
@@ -180,15 +203,21 @@ async function processOnePage(run: Run): Promise<void> {
   }
   await sb.from('runs').update(updates).eq('id', run.id)
 
-  await logInfo('cron.detect', `Page ${page} done — ${inserted.length} flagged of ${pageResult.questions.length} scanned`, {
-    run_id: run.id,
-    page,
-    last_page: pageResult.lastPage,
-    questions_scanned: pageResult.questions.length,
-    flagged: inserted.length,
-    errors,
-    is_last_page: isLast,
-  })
+  await logInfo(
+    'cron.detect',
+    `Page ${page} done — ${inserted.length} flagged of ${pageResult.questions.length} scanned (skipped ${lowConfidenceSkipped} low-confidence, ${errors} errors)`,
+    {
+      run_id: run.id,
+      page,
+      last_page: pageResult.lastPage,
+      questions_scanned: pageResult.questions.length,
+      flagged: inserted.length,
+      low_confidence_skipped: lowConfidenceSkipped,
+      errors,
+      min_confidence: MIN_FLAG_CONFIDENCE,
+      is_last_page: isLast,
+    }
+  )
 }
 
 // Module-level guard so concurrent cron pings don't double-process the same
