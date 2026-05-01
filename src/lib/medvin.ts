@@ -91,6 +91,67 @@ async function medvinFetch(path: string, init: RequestInit = {}): Promise<Respon
   return res
 }
 
+export type MedvinQuestion = Record<string, unknown> & {
+  id: number
+  question_text: string
+  options: Array<{
+    id: number
+    option_text: string
+    is_correct: boolean
+    explanation?: string | null
+  }>
+  question_bank_id?: number
+  topic_id?: number | null
+  unit_id?: number | null
+  question_type?: { slug?: string; label?: string } | string
+}
+
+export type EnrollmentQuestionsPage = {
+  questions: MedvinQuestion[]
+  currentPage: number
+  lastPage: number | null
+  total: number | null
+}
+
+/**
+ * GET /api/admin/enrollments/{slug}/questions?page=N&per_page=100.
+ * Tolerant to Laravel paginated shape ({data, links, meta}).
+ *
+ * Used by the in-app detection cron — fetches one page at a time so each
+ * cron invocation stays well under any timeout.
+ */
+export async function getEnrollmentQuestionsPage(
+  slug: string,
+  page: number,
+  perPage = 100
+): Promise<EnrollmentQuestionsPage> {
+  const path = `/api/admin/enrollments/${encodeURIComponent(slug)}/questions?page=${page}&per_page=${perPage}`
+  const res = await medvinFetch(path)
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`enrollments/${slug}/questions page=${page} failed: ${res.status} ${text.slice(0, 200)}`)
+  }
+  const json = (await res.json().catch(() => null)) as
+    | { data?: unknown[]; meta?: { current_page?: number; last_page?: number; total?: number } }
+    | unknown[]
+    | null
+
+  const rawList: unknown[] = Array.isArray(json)
+    ? json
+    : Array.isArray(json?.data)
+      ? json.data
+      : []
+
+  const meta = (json && !Array.isArray(json) ? json.meta : undefined) ?? {}
+
+  return {
+    questions: rawList as MedvinQuestion[],
+    currentPage: typeof meta.current_page === 'number' ? meta.current_page : page,
+    lastPage: typeof meta.last_page === 'number' ? meta.last_page : null,
+    total: typeof meta.total === 'number' ? meta.total : null,
+  }
+}
+
 /**
  * GET /api/admin/question-banks. Tolerant to two response shapes:
  *   - Laravel-style { data: [...] }

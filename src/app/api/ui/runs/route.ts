@@ -3,18 +3,14 @@ import { withUiAuth } from '@/lib/api/ui-auth'
 import { isObject } from '@/lib/api/make-auth'
 
 /**
- * "Run now" — kicks off a Make Scenario A detection batch.
+ * "Run now" — kicks off an in-app detection run.
  *
- * Body: {
- *   question_bank_id: number,
- *   question_bank_title: string,
- *   enrollment_slug: string  // derived from title; used by Make to hit
- *                            //   /api/admin/enrollments/{slug}/questions
- * }
+ * Body: { question_bank_id: number, question_bank_title: string, enrollment_slug: string }
  *
- * Posts the bank metadata to the Make webhook configured in
- * MAKE_SCENARIO_A_WEBHOOK_URL. Make is responsible for creating its own
- * runs row via POST /api/make/runs and finishing it via PATCH /finish.
+ * Inserts a row into `runs` with state='detecting' and cursor={page:1}. The
+ * /api/cron/detect job picks it up on its next tick and starts walking pages.
+ *
+ * Replaces the old Make Scenario A webhook trigger.
  */
 export const POST = withUiAuth(async (request: NextRequest, _ctx, auth) => {
   const body = (await request.json().catch(() => null)) as unknown
@@ -30,59 +26,30 @@ export const POST = withUiAuth(async (request: NextRequest, _ctx, auth) => {
     return NextResponse.json({ error: 'invalid_body', fields }, { status: 400 })
   }
 
-  const webhookUrl = process.env.MAKE_SCENARIO_A_WEBHOOK_URL
-  if (!webhookUrl) {
-    return NextResponse.json(
-      {
-        error: 'webhook_not_configured',
-        detail: 'MAKE_SCENARIO_A_WEBHOOK_URL is not set on the server',
-      },
-      { status: 500 }
-    )
-  }
-
-  const triggeredBy = `ui:${auth.user.email}`
-  const payload = {
-    question_bank_id: body.question_bank_id,
-    question_bank_title: body.question_bank_title,
-    enrollment_slug: body.enrollment_slug,
-    triggered_by: triggeredBy,
-  }
-
-  let upstream: Response
-  try {
-    upstream = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+  const { data, error } = await auth.serviceRole
+    .from('runs')
+    .insert({
+      question_bank_id: body.question_bank_id,
+      question_bank_title: body.question_bank_title,
+      enrollment_slug: body.enrollment_slug,
+      triggered_by: `ui:${auth.user.email}`,
+      state: 'detecting',
+      cursor: { page: 1 },
     })
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e)
-    return NextResponse.json(
-      { error: 'webhook_unreachable', detail },
-      { status: 502 }
-    )
-  }
+    .select('id')
+    .single()
 
-  if (!upstream.ok) {
-    const text = await upstream.text().catch(() => '')
+  if (error || !data) {
     return NextResponse.json(
-      {
-        error: 'webhook_failed',
-        upstream_status: upstream.status,
-        detail: text.slice(0, 500),
-      },
-      { status: 502 }
+      { error: 'db_error', detail: error?.message ?? 'insert failed' },
+      { status: 500 }
     )
   }
 
   return NextResponse.json({
     ok: true,
-    bank: {
-      id: body.question_bank_id,
-      title: body.question_bank_title,
-    },
-    triggered_by: triggeredBy,
+    run_id: data.id,
+    bank: { id: body.question_bank_id, title: body.question_bank_title },
     triggered_at: new Date().toISOString(),
   })
 })

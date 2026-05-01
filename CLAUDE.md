@@ -69,12 +69,29 @@ Statuses: `pending_review` → `approved_pending_push` | `rejected` → `pushed`
 
 `review_items.patched_at` and `review_items.patch_response` are misnamed after migration 002 (semantically they're now `pushed_at` / `push_response`). Left in place to avoid invasive renames; rename when Scenario B is built.
 
+## Detection + rewrite are in-app (Phase 1 of the Make migration)
+
+Make Scenario A is deprecated. The pipeline now runs as two cron-triggered routes:
+- `src/app/api/cron/detect/route.ts` — picks oldest `state='detecting'` run, fetches one Medvin page, runs the AI detector on each question, inserts flagged items as `pending_rewrite`, advances cursor. When out of pages, flips run to `state='rewriting'`.
+- `src/app/api/cron/rewrite/route.ts` — picks up to 10 `pending_rewrite` items, runs the AI rewriter, validates output, flips to `pending_review` (success) or `rejected` with auto-note (rewriter declined / validation failed).
+
+Prompts ported verbatim from the Make blueprint live in `src/lib/prompts/{detect,rewrite}.ts`. Bump `*_PROMPT_VERSION` when editing — `ai_prompt_version` is recorded on every review_item.
+
+LLM client: `src/lib/llm.ts` (OpenAI SDK, rate-limit retry with backoff, `chatCompleteJson` helper).
+
+Cron auth: `CRON_SECRET` env var, `x-cron-secret` header. See `src/lib/api/cron-auth.ts`.
+
+`POST /api/ui/runs` no longer POSTs to a Make webhook — it just inserts a `runs` row. Detection cron picks it up next tick.
+
 ## Outstanding
-- Inline edit mode on `/review/[id]`. The `/api/ui/review-items/:id/approve` endpoint already accepts `edited_proposal` with full validation; UI just doesn't expose it yet.
+- Phase 2 push to Medvin. Approved items sit in `approved_pending_push` until built. Will be `src/app/api/cron/push/route.ts` calling `PATCH /api/admin/questions/{id}` via an extended `src/lib/medvin.ts`. **At that point the "Medvin client is read-only" rule below stops being true.**
+- Make Scenario A teardown: pause/delete in Make once the cron pipeline is proven end-to-end. `MAKE_API_KEY` and `MAKE_SCENARIO_A_WEBHOOK_URL` env vars become unused.
+- Inline edit mode on `/review/[id]`. API already supports `edited_proposal`; UI doesn't expose it.
 - Keyboard shortcuts (A/R/E/J/K) on review screen.
-- `/admin/users` for role management; admin-bootstrap trigger to promote `ADMIN_BOOTSTRAP_EMAIL` on signup.
-- Medvin client (`src/lib/medvin.ts`) is read-only and only used by the bank dropdown. All Medvin writes go through Make Scenario B, which has its own credentials. Don't add write methods here without explicit reason.
-- Approve/reject server actions are gone; the UI now calls `/api/ui/*` over fetch and the audit_log captures every transition with `actor_user_id` and a `diff` payload.
+- `/admin/users` + admin bootstrap trigger.
+- `gpt-5.2` is hardcoded in both prompt files. Move to env var if you want runtime model switching.
+- Medvin client (`src/lib/medvin.ts`) is currently read-only. Push (Phase 2) adds write methods.
+- Approve/reject server actions are gone; the UI calls `/api/ui/*` via fetch and the audit_log captures every transition with `actor_user_id` and a `diff` payload.
 
 ## Notes for future sessions
 

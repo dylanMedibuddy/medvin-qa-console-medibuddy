@@ -1,9 +1,17 @@
 export type ReviewStatus =
+  | 'pending_rewrite'
   | 'pending_review'
   | 'approved_pending_push'
   | 'rejected'
   | 'pushed'
   | 'push_error'
+
+export type RunState =
+  | 'detecting'
+  | 'rewriting'
+  | 'finished'
+  | 'cancelled'
+  | 'error'
 
 export type RejectReason =
   | 'false_flag'
@@ -61,6 +69,7 @@ export type ReviewItemRow = {
 }
 
 export const STATUS_STYLES: Record<ReviewStatus, string> = {
+  pending_rewrite: 'bg-purple-100 text-purple-800',
   pending_review: 'bg-amber-100 text-amber-800',
   approved_pending_push: 'bg-emerald-100 text-emerald-800',
   rejected: 'bg-neutral-200 text-neutral-700',
@@ -69,9 +78,26 @@ export const STATUS_STYLES: Record<ReviewStatus, string> = {
 }
 
 export const STATUS_LABELS: Record<ReviewStatus, string> = {
+  pending_rewrite: 'Awaiting rewrite',
   pending_review: 'Pending review',
   approved_pending_push: 'Approved (ready to push)',
   rejected: 'Rejected',
   pushed: 'Pushed',
   push_error: 'Push error',
+}
+
+export const RUN_STATE_STYLES: Record<RunState, string> = {
+  detecting: 'bg-blue-100 text-blue-800',
+  rewriting: 'bg-purple-100 text-purple-800',
+  finished: 'bg-emerald-100 text-emerald-800',
+  cancelled: 'bg-neutral-200 text-neutral-700',
+  error: 'bg-red-100 text-red-800',
+}
+
+export const RUN_STATE_LABELS: Record<RunState, string> = {
+  detecting: 'Detecting',
+  rewriting: 'Rewriting',
+  finished: 'Finished',
+  cancelled: 'Cancelled',
+  error: 'Error',
 }

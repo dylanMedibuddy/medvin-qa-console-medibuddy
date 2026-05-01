@@ -2,6 +2,11 @@ import { createClient } from '@/lib/supabase/server'
 import { Nav } from '@/components/nav'
 import { listQuestionBanks, type MedvinBank } from '@/lib/medvin'
 import { RunForm } from './run-form'
+import {
+  RUN_STATE_LABELS,
+  RUN_STATE_STYLES,
+  type RunState,
+} from '@/lib/types'
 
 type Run = {
   id: string
@@ -14,6 +19,10 @@ type Run = {
   total_errors: number
   triggered_by: string | null
   notes: string | null
+  state: RunState
+  cursor: { page?: number } | null
+  total_pages: number | null
+  error_message: string | null
 }
 
 function formatDateTime(iso: string) {
@@ -54,7 +63,7 @@ export default async function RunsPage() {
     supabase
       .from('runs')
       .select(
-        'id, started_at, finished_at, question_bank_id, question_bank_title, total_scanned, total_flagged, total_errors, triggered_by, notes'
+        'id, started_at, finished_at, question_bank_id, question_bank_title, total_scanned, total_flagged, total_errors, triggered_by, notes, state, cursor, total_pages, error_message'
       )
       .order('started_at', { ascending: false })
       .limit(100)
@@ -98,7 +107,8 @@ export default async function RunsPage() {
           </div>
         ) : !runs || runs.length === 0 ? (
           <div className="rounded-md border border-neutral-200 bg-white p-8 text-center text-sm text-neutral-500">
-            No runs yet. They&apos;ll appear here once Make.com starts triggering them.
+            No runs yet. Trigger one above and the detection cron will pick it
+            up within a minute.
           </div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-neutral-200 bg-white">
@@ -107,54 +117,86 @@ export default async function RunsPage() {
                 <tr>
                   <th className="px-4 py-3 font-medium">Started</th>
                   <th className="px-4 py-3 font-medium">Bank</th>
+                  <th className="px-4 py-3 font-medium">State</th>
+                  <th className="px-4 py-3 font-medium">Progress</th>
                   <th className="px-4 py-3 font-medium">Triggered by</th>
                   <th className="px-4 py-3 font-medium text-right">Scanned</th>
                   <th className="px-4 py-3 font-medium text-right">Flagged</th>
                   <th className="px-4 py-3 font-medium text-right">Errors</th>
                   <th className="px-4 py-3 font-medium">Duration</th>
-                  <th className="px-4 py-3 font-medium">Notes</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
-                {runs.map((run) => (
-                  <tr key={run.id} className="hover:bg-neutral-50">
-                    <td className="px-4 py-3 text-neutral-700">
-                      {formatDateTime(run.started_at)}
-                    </td>
-                    <td className="px-4 py-3 text-neutral-700">
-                      <div>{run.question_bank_title ?? '—'}</div>
-                      <div className="text-xs text-neutral-500">
-                        Bank {run.question_bank_id}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs text-neutral-600">
-                      {run.triggered_by ?? '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right text-neutral-700">
-                      {run.total_scanned}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="font-medium text-amber-700">
-                        {run.total_flagged}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span
-                        className={
-                          run.total_errors > 0 ? 'text-red-700' : 'text-neutral-400'
-                        }
-                      >
-                        {run.total_errors}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-neutral-600">
-                      {formatDuration(run.started_at, run.finished_at)}
-                    </td>
-                    <td className="px-4 py-3 max-w-xs truncate text-neutral-600">
-                      {run.notes ?? '—'}
-                    </td>
-                  </tr>
-                ))}
+                {runs.map((run) => {
+                  const stateStyle =
+                    RUN_STATE_STYLES[run.state] ?? 'bg-neutral-100 text-neutral-700'
+                  const stateLabel = RUN_STATE_LABELS[run.state] ?? run.state
+                  const page = run.cursor?.page
+                  const showDetectionProgress =
+                    run.state === 'detecting' && page != null
+                  return (
+                    <tr key={run.id} className="hover:bg-neutral-50">
+                      <td className="px-4 py-3 text-neutral-700 whitespace-nowrap">
+                        {formatDateTime(run.started_at)}
+                      </td>
+                      <td className="px-4 py-3 text-neutral-700">
+                        <div>{run.question_bank_title ?? '—'}</div>
+                        <div className="text-xs text-neutral-500">
+                          Bank {run.question_bank_id}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${stateStyle}`}
+                        >
+                          {stateLabel}
+                        </span>
+                        {run.state === 'error' && run.error_message && (
+                          <div className="mt-1 max-w-xs truncate text-xs text-red-700">
+                            {run.error_message}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-neutral-600">
+                        {showDetectionProgress ? (
+                          <span>
+                            page {page}
+                            {run.total_pages != null && ` / ${run.total_pages}`}
+                          </span>
+                        ) : run.state === 'rewriting' ? (
+                          <span>rewriting flagged items…</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-neutral-600">
+                        {run.triggered_by ?? '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-neutral-700">
+                        {run.total_scanned}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="font-medium text-amber-700">
+                          {run.total_flagged}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span
+                          className={
+                            run.total_errors > 0
+                              ? 'text-red-700'
+                              : 'text-neutral-400'
+                          }
+                        >
+                          {run.total_errors}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-neutral-600 whitespace-nowrap">
+                        {formatDuration(run.started_at, run.finished_at)}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

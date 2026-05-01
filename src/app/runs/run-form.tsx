@@ -92,9 +92,10 @@ export function RunForm({ banks }: { banks: MedvinBank[] }) {
 
       {result?.ok && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
-          Triggered <span className="font-medium">{result.bank.title}</span> (#
-          {result.bank.id}). Make is now scanning. New items should start appearing
-          in <a href="/queue" className="underline">/queue</a> shortly.
+          Run started for <span className="font-medium">{result.bank.title}</span>{' '}
+          (#{result.bank.id}). Detection cron picks it up within a minute; flagged
+          items will appear in <a href="/queue" className="underline">the queue</a>{' '}
+          as they're rewritten.
         </div>
       )}
       {result && !result.ok && (

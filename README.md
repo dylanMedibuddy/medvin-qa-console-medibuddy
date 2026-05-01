@@ -32,12 +32,51 @@ Internal Medibuddy tool for reviewing AI-generated rewrites of medical exam ques
 ## Lifecycle
 
 ```
-            ┌─ approved_pending_push ──> pushed     (push success)
-pending ──┤                          \
-            └─ rejected                 push_error  (push failed)
+detection cron       rewrite cron        reviewer            push (TBD)
+─────────────        ────────────        ────────            ────────
+pending_rewrite ──>  pending_review ──>  approved_pending_push ──> pushed
+                                    └─>  rejected                  push_error
 ```
 
-`pending_review` is the only status from which user actions can transition. Once an item is `approved_pending_push`, the future Push scenario (Scenario B, separate task) flips it to `pushed` or `push_error`.
+A run starts in `state='detecting'` and walks Medvin pages one cron tick at a time. For each question the AI detector judges whether it's structurally obvious. Flagged items land as `pending_rewrite`. Once detection is done, the run flips to `state='rewriting'`. The rewrite cron picks up `pending_rewrite` items in batches, runs the AI rewriter, and either flips them to `pending_review` (success) or `rejected` with a note (rewriter declined or output failed validation). When no `pending_rewrite` items remain for a run, it flips to `state='finished'`.
+
+Reviewer actions only operate on `pending_review`. Push from `approved_pending_push` to Medvin is the next slice (not built yet).
+
+## In-app detection + rewrite
+
+Two cron-triggered jobs replace what was Make Scenario A. Both authenticated via the `x-cron-secret` header.
+
+### `POST /api/cron/detect` (run every 1 minute)
+
+Picks the oldest run in `state='detecting'`. Fetches its next page (100 questions) from Medvin's `/api/admin/enrollments/{slug}/questions`. Runs the AI detector on each. Inserts flagged items as `pending_rewrite`. Advances cursor.
+
+Each invocation processes one page (~1 minute on OpenAI tier 1). When the run runs out of pages, it flips to `state='rewriting'`.
+
+```bash
+curl -s -X POST "$API/api/cron/detect" -H "x-cron-secret: $CRON_SECRET"
+# → 200 { ok, run_id, page, last_page, questions_on_page, flagged, detector_errors, state }
+# → 200 { ok: true, processed: 0, note: "no detecting runs" } when there's nothing to do
+```
+
+### `POST /api/cron/rewrite` (run every 2 minutes)
+
+Picks up to 10 `pending_rewrite` items. Runs the AI rewriter. Validates the output against the original (option ids preserved, correct answer preserved, no empty text). Flips to `pending_review` on success or `rejected` with `[auto-rejected: ...]` notes on failure.
+
+After the batch, finishes any `state='rewriting'` runs whose pending items are all done.
+
+```bash
+curl -s -X POST "$API/api/cron/rewrite" -H "x-cron-secret: $CRON_SECRET"
+# → 200 { ok, processed, succeeded, rewriter_failed, validation_failed, llm_errors }
+```
+
+### Railway cron setup
+
+In Railway dashboard for the service:
+1. Settings → **Cron Schedule** → add two schedules:
+   - `* * * * *` (every minute) → `curl -fsS -X POST "$RAILWAY_PUBLIC_DOMAIN/api/cron/detect" -H "x-cron-secret: $CRON_SECRET"`
+   - `*/2 * * * *` (every 2 min) → same shape but `/api/cron/rewrite`
+2. Set env vars: `CRON_SECRET` (random hex), `OPENAI_API_KEY`, `MEDVIN_ADMIN_EMAIL`, `MEDVIN_ADMIN_PASSWORD`
+3. Trigger a run from `/runs` and watch the Runs table — state should flip from `Detecting` → `Rewriting` → `Finished`
 
 ## Make API
 
