@@ -129,7 +129,7 @@ export const POST = withCronAuth(async () => {
   // Sequential was too slow — 50 calls × 3s = 150s exceeded the 100s edge timeout.
   type DetOutcome =
     | { ok: true; question: MedvinQuestion; det: DetectionResult }
-    | { ok: false }
+    | { ok: false; error: string }
 
   const outcomes = await mapWithConcurrency<MedvinQuestion, DetOutcome>(
     pageResult.questions,
@@ -139,17 +139,20 @@ export const POST = withCronAuth(async () => {
         const det = await detect(q)
         return { ok: true, question: q, det }
       } catch (e) {
-        console.error('[cron/detect] detector failed', { question_id: q.id, err: e })
-        return { ok: false }
+        const error = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+        console.error('[cron/detect] detector failed', { question_id: q.id, error })
+        return { ok: false, error }
       }
     }
   )
 
   const flagged: { question: MedvinQuestion; det: DetectionResult }[] = []
   let errors = 0
+  let firstError: string | null = null
   for (const o of outcomes) {
     if (!o.ok) {
       errors++
+      if (!firstError) firstError = o.error
       continue
     }
     if (o.det.is_obvious) flagged.push({ question: o.question, det: o.det })
@@ -215,6 +218,7 @@ export const POST = withCronAuth(async () => {
     questions_on_page: pageResult.questions.length,
     flagged: inserted.length,
     detector_errors: errors,
+    first_detector_error: firstError,
     state: isLast ? 'rewriting' : 'detecting',
   })
 })
